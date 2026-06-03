@@ -8,6 +8,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from openpyxl.styles import Font, PatternFill
+from openpyxl.drawing.image import Image as XLImage
+
 
 st.set_page_config(
     page_title="Vehicle Order Analysis Tool",
@@ -57,8 +60,180 @@ TARGETS = {
 TARGET_ORDERS = [10.0, 20.0]
 
 
+def format_comparison_sheet(writer, sheet_name):
+    ws = writer.book[sheet_name]
+
+    green_fill = PatternFill(
+        start_color="C6EFCE",
+        end_color="C6EFCE",
+        fill_type="solid"
+    )
+
+    red_fill = PatternFill(
+        start_color="FFC7CE",
+        end_color="FFC7CE",
+        fill_type="solid"
+    )
+
+    header_fill = PatternFill(
+        start_color="D9EAF7",
+        end_color="D9EAF7",
+        fill_type="solid"
+    )
+
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.fill = header_fill
+
+    status_col = None
+
+    for cell in ws[1]:
+        if cell.value == "Status":
+            status_col = cell.column
+            break
+
+    if status_col is not None:
+        for row in range(2, ws.max_row + 1):
+            status_cell = ws.cell(row=row, column=status_col)
+
+            if status_cell.value == "PASS":
+                fill = green_fill
+            elif status_cell.value == "FAIL":
+                fill = red_fill
+            else:
+                fill = None
+
+            if fill is not None:
+                for col in range(1, ws.max_column + 1):
+                    ws.cell(row=row, column=col).fill = fill
+
+    for col in ws.columns:
+        col_letter = col[0].column_letter
+        ws.column_dimensions[col_letter].width = 22
+
+
+def format_curve_sheet(writer, sheet_name):
+    ws = writer.book[sheet_name]
+
+    header_fill = PatternFill(
+        start_color="D9EAF7",
+        end_color="D9EAF7",
+        fill_type="solid"
+    )
+
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.fill = header_fill
+
+    for col in ws.columns:
+        col_letter = col[0].column_letter
+        ws.column_dimensions[col_letter].width = 16
+
+
+def create_curve_plot_png(
+    curve_df,
+    order_value,
+    vin_number,
+    fuel_type,
+    axle_type
+):
+    fig, ax = plt.subplots(figsize=(14, 8))
+
+    ax.plot(
+        curve_df["RPM"],
+        curve_df["ChA"],
+        label="ChA",
+        linewidth=2
+    )
+
+    ax.plot(
+        curve_df["RPM"],
+        curve_df["ChB"],
+        label="ChB",
+        linewidth=2
+    )
+
+    ax.plot(
+        curve_df["RPM"],
+        curve_df["ChC"],
+        label="ChC",
+        linewidth=2
+    )
+
+    ax.plot(
+        curve_df["RPM"],
+        curve_df["Target"],
+        label="Target Curve",
+        color="red",
+        linewidth=5
+    )
+
+    ax.set_title(
+        f"{int(order_value)}. Order vs RPM | VIN: {vin_number} | {fuel_type} | {axle_type}",
+        fontsize=16
+    )
+
+    ax.set_xlabel("RPM", fontsize=13)
+    ax.set_ylabel(
+        f"{int(order_value)}. Order Amplitude [m/s²]",
+        fontsize=13
+    )
+
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper right", fontsize=12)
+
+    rpm_min = min(1000, float(curve_df["RPM"].min()))
+    rpm_max = max(4500, float(curve_df["RPM"].max()))
+    ax.set_xlim(rpm_min, rpm_max)
+
+    fig.tight_layout()
+
+    img_buffer = BytesIO()
+    fig.savefig(
+        img_buffer,
+        format="png",
+        dpi=180,
+        bbox_inches="tight"
+    )
+    plt.close(fig)
+
+    img_buffer.seek(0)
+    return img_buffer
+
+
+def add_png_plot_to_sheet(
+    writer,
+    sheet_name,
+    curve_df,
+    order_value,
+    vin_number,
+    fuel_type,
+    axle_type
+):
+    ws = writer.book[sheet_name]
+
+    img_buffer = create_curve_plot_png(
+        curve_df=curve_df,
+        order_value=order_value,
+        vin_number=vin_number,
+        fuel_type=fuel_type,
+        axle_type=axle_type
+    )
+
+    img = XLImage(img_buffer)
+
+    img.width = 900
+    img.height = 520
+
+    ws.add_image(img, "G2")
+
+
 def make_excel_report(vehicle_info, results_by_order, curves_by_order):
     output = BytesIO()
+
+    vin_number = vehicle_info["VIN"]
+    fuel_type = vehicle_info["Fuel Type"]
+    axle_type = vehicle_info["Axle Type"]
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         pd.DataFrame([vehicle_info]).to_excel(
@@ -69,18 +244,36 @@ def make_excel_report(vehicle_info, results_by_order, curves_by_order):
 
         for order_value, result_df in results_by_order.items():
             sheet_name = f"{int(order_value)} Order Comparison"
+            sheet_name = sheet_name[:31]
+
             result_df.to_excel(
                 writer,
-                sheet_name=sheet_name[:31],
+                sheet_name=sheet_name,
                 index=False
             )
 
+            format_comparison_sheet(writer, sheet_name)
+
         for order_value, curve_df in curves_by_order.items():
             sheet_name = f"{int(order_value)} Order Curves"
+            sheet_name = sheet_name[:31]
+
             curve_df.to_excel(
                 writer,
-                sheet_name=sheet_name[:31],
+                sheet_name=sheet_name,
                 index=False
+            )
+
+            format_curve_sheet(writer, sheet_name)
+
+            add_png_plot_to_sheet(
+                writer=writer,
+                sheet_name=sheet_name,
+                curve_df=curve_df,
+                order_value=order_value,
+                vin_number=vin_number,
+                fuel_type=fuel_type,
+                axle_type=axle_type
             )
 
     output.seek(0)
@@ -294,7 +487,6 @@ info_cols[2].metric("Axle Type", axle_type)
 
 st.subheader("Analysis Settings")
 
-# Golden/default fixed analysis parameters
 samples_per_rev = 512
 revs_per_block = 8
 overlap = 0.75
